@@ -11,18 +11,30 @@ Functions 'get_coding', 'decode', 'encode' and 'to_unicode' come from Eric4
 source code (Utilities/__init___.py) Copyright © 2003-2009 Detlev Offenbach
 """
 
+# Standard library imports
+from codecs import BOM_UTF8, BOM_UTF16, BOM_UTF32
+import tempfile
+import locale
 import re
 import os
-import locale
+import os.path as osp
 import sys
-from codecs import BOM_UTF8, BOM_UTF16, BOM_UTF32, getincrementaldecoder
+import time
+import errno
 
+# Third-party imports
 from chardet.universaldetector import UniversalDetector
+from atomicwrites import atomic_write
 
 # Local imports
 from spyder.py3compat import (is_string, to_text_string, is_binary_string,
-                              is_unicode)
+                              is_unicode, PY2)
 from spyder.utils.external.binaryornot.check import is_binary
+
+if PY2:
+    import pathlib2 as pathlib
+else:
+    import pathlib
 
 
 PREFERRED_ENCODING = locale.getpreferredencoding()
@@ -72,10 +84,10 @@ def to_unicode_from_fs(string):
             else:
                 return unic
     return string
-    
+
 def to_fs_from_unicode(unic):
     """
-    Return a byte string version of unic encoded using the file 
+    Return a byte string version of unic encoded using the file
     system encoding.
     """
     if is_unicode(unic):
@@ -94,31 +106,35 @@ def to_fs_from_unicode(unic):
 
 # Codecs for working with files and text.
 CODING_RE = re.compile(r"coding[:=]\s*([-\w_.]+)")
-CODECS = ['utf-8', 'iso8859-1',  'iso8859-15', 'ascii', 'koi8-r',
+CODECS = ['utf-8', 'iso8859-1',  'iso8859-15', 'ascii', 'koi8-r', 'cp1251',
           'koi8-u', 'iso8859-2', 'iso8859-3', 'iso8859-4', 'iso8859-5',
           'iso8859-6', 'iso8859-7', 'iso8859-8', 'iso8859-9',
           'iso8859-10', 'iso8859-13', 'iso8859-14', 'latin-1',
           'utf-16']
 
-def get_coding(text):
+
+def get_coding(text, force_chardet=False):
     """
     Function to get the coding of a text.
     @param text text to inspect (string)
     @return coding string
     """
-    for line in text.splitlines()[:2]:
-        try:
-            result = CODING_RE.search(to_text_string(line))
-        except UnicodeDecodeError:
-            # This could fail because to_text_string assume the text is utf8-like
-            # and we don't know the encoding to give it to to_text_string
-            pass
-        else:
-            if result:
-                codec = result.group(1)
-                # sometimes we find a false encoding that can result in errors
-                if codec in CODECS:
-                    return codec
+    if not force_chardet:
+        for line in text.splitlines()[:2]:
+            try:
+                result = CODING_RE.search(to_text_string(line))
+            except UnicodeDecodeError:
+                # This could fail because to_text_string assume the text
+                # is utf8-like and we don't know the encoding to give
+                # it to to_text_string
+                pass
+            else:
+                if result:
+                    codec = result.group(1)
+                    # sometimes we find a false encoding that can
+                    # result in errors
+                    if codec in CODECS:
+                        return codec
 
     # Fallback using chardet
     if is_binary_string(text):
@@ -170,7 +186,7 @@ def encode(text, orig_coding):
     """
     if orig_coding == 'utf-8-bom':
         return BOM_UTF8 + text.encode("utf-8"), 'utf-8-bom'
-    
+
     # Try saving with original encoding
     if orig_coding:
         try:
@@ -193,16 +209,10 @@ def encode(text, orig_coding):
             return text.encode(coding), coding
         except (UnicodeError, LookupError):
             pass
-    
-    # Try saving as ASCII
-    try:
-        return text.encode('ascii'), 'ascii'
-    except UnicodeError:
-        pass
-    
+
     # Save as UTF-8 without BOM
     return text.encode('utf-8'), 'utf-8'
-    
+
 def to_unicode(string):
     """Convert a string to unicode"""
     if not is_unicode(string):
@@ -216,17 +226,72 @@ def to_unicode(string):
             else:
                 return unic
     return string
-    
+
 
 def write(text, filename, encoding='utf-8', mode='wb'):
     """
-    Write 'text' to file ('filename') assuming 'encoding'
+    Write 'text' to file ('filename') assuming 'encoding' in an atomic way
     Return (eventually new) encoding
     """
     text, encoding = encode(text, encoding)
-    with open(filename, mode) as textfile:
-        textfile.write(text)
+
+    if os.name == 'nt':
+        try:
+            absolute_path_filename = pathlib.Path(filename).resolve()
+            if absolute_path_filename.exists():
+                absolute_filename = to_text_string(absolute_path_filename)
+            else:
+                absolute_filename = osp.realpath(filename)
+        except (OSError, RuntimeError):
+            absolute_filename = osp.realpath(filename)
+    else:
+        absolute_filename = osp.realpath(filename)
+
+    if 'a' in mode:
+        with open(absolute_filename, mode) as textfile:
+            textfile.write(text)
+    else:
+        # Based in the solution at untitaker/python-atomicwrites#42.
+        # Needed to fix file permissions overwritting.
+        # See spyder-ide/spyder#9381.
+        try:
+            file_stat = os.stat(absolute_filename)
+            original_mode = file_stat.st_mode
+            creation = file_stat.st_atime
+        except OSError:  # Change to FileNotFoundError for PY3
+            # Creating a new file, emulate what os.open() does
+            umask = os.umask(0)
+            os.umask(umask)
+            # Set base permission of a file to standard permissions.
+            # See #spyder-ide/spyder#14112.
+            original_mode = 0o666 & ~umask
+            creation = time.time()
+        try:
+            # fixes issues with scripts in Dropbox leaving
+            # temporary files in the folder, see spyder-ide/spyder#13041
+            tempfolder = None
+            if 'dropbox' in absolute_filename.lower():
+                tempfolder = tempfile.gettempdir()
+            with atomic_write(absolute_filename, overwrite=True,
+                              mode=mode, dir=tempfolder) as textfile:
+                textfile.write(text)
+        except OSError as error:
+            # Some filesystems don't support the option to sync directories
+            # See untitaker/python-atomicwrites#17
+            if error.errno != errno.EINVAL:
+                with open(absolute_filename, mode) as textfile:
+                    textfile.write(text)
+        try:
+            os.chmod(absolute_filename, original_mode)
+            file_stat = os.stat(absolute_filename)
+            # Preserve creation timestamps
+            os.utime(absolute_filename, (creation, file_stat.st_mtime))
+        except OSError:
+            # Prevent error when chmod/utime is not allowed
+            # See spyder-ide/spyder#11308
+            pass
     return encoding
+
 
 def writelines(lines, filename, encoding='utf-8', mode='wb'):
     """

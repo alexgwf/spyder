@@ -1,0 +1,20 @@
+# We can not refer to an environment.yml file from another
+# So to get performant launches on mybinder.org, we have copied
+# the contents of this file to binder/environment.yml. If you
+# make changes here, please copy them over there too.
+coverage
+cython
+flaky
+matplotlib
+mock
+pandas
+pillow
+pytest <6.0
+pytest-cov
+pytest-lazy-fixture
+pytest-mock
+pytest-ordering
+pytest-qt
+pyyaml
+scipy
+sympy

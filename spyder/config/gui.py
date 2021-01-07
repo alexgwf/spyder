@@ -23,15 +23,19 @@ from qtpy.QtGui import QFont, QFontDatabase, QKeySequence
 from qtpy.QtWidgets import QShortcut
 
 # Local imports
-from spyder.config.main import CONF
-from spyder.config.user import NoDefault
+from spyder.config.manager import CONF
 from spyder.py3compat import to_text_string
 from spyder.utils import syntaxhighlighters as sh
 
+# Third-party imports
+from qtconsole.styles import dark_color
 
 # To save metadata about widget shortcuts (needed to build our
 # preferences page)
 Shortcut = namedtuple('Shortcut', 'data')
+
+# Stylesheet to remove the indicator that appears on tool buttons with a menu.
+STYLE_BUTTON_CSS = "QToolButton::menu-indicator{image: none;}"
 
 
 def font_is_installed(font):
@@ -54,7 +58,7 @@ def get_family(families):
 
 FONT_CACHE = {}
 
-def get_font(section='main', option='font', font_size_delta=0):
+def get_font(section='appearance', option='font', font_size_delta=0):
     """Get console font properties depending on OS and user options"""
     font = FONT_CACHE.get((section, option))
 
@@ -81,7 +85,7 @@ def get_font(section='main', option='font', font_size_delta=0):
     return font
 
 
-def set_font(font, section='main', option='font'):
+def set_font(font, section='appearance', option='font'):
     """Set font"""
     CONF.set(section, option+'/family', to_text_string(font.family()))
     CONF.set(section, option+'/size', float(font.pointSize()))
@@ -90,65 +94,34 @@ def set_font(font, section='main', option='font'):
     FONT_CACHE[(section, option)] = font
 
 
-def get_shortcut(context, name):
-    """Get keyboard shortcut (key sequence string)"""
-    return CONF.get('shortcuts', '%s/%s' % (context, name))
-
-
-def set_shortcut(context, name, keystr):
-    """Set keyboard shortcut (key sequence string)"""
-    CONF.set('shortcuts', '%s/%s' % (context, name), keystr)
-
-
-def fixed_shortcut(keystr, parent, action):
+def _config_shortcut(action, context, name, keystr, parent):
     """
-    DEPRECATED: This function will be removed in Spyder 4.0
+    Create a Shortcut namedtuple for a widget.
 
-    Define a fixed shortcut according to a keysequence string
+    The data contained in this tuple will be registered in our shortcuts
+    preferences page.
     """
-    sc = QShortcut(QKeySequence(keystr), parent, action)
-    sc.setContext(Qt.WidgetWithChildrenShortcut)
-    return sc
-
-
-def config_shortcut(action, context, name, parent):
-    """
-    Create a Shortcut namedtuple for a widget
-    
-    The data contained in this tuple will be registered in
-    our shortcuts preferences page
-    """
-    keystr = get_shortcut(context, name)
     qsc = QShortcut(QKeySequence(keystr), parent, action)
     qsc.setContext(Qt.WidgetWithChildrenShortcut)
     sc = Shortcut(data=(qsc, context, name))
     return sc
 
 
-def iter_shortcuts():
-    """Iterate over keyboard shortcuts"""
-    for option in CONF.options('shortcuts'):
-        context, name = option.split("/", 1)
-        yield context, name, get_shortcut(context, name)
-
-
-def reset_shortcuts():
-    """Reset keyboard shortcuts to default values"""
-    CONF.reset_to_defaults(section='shortcuts')
-
-
 def get_color_scheme(name):
     """Get syntax color scheme"""
     color_scheme = {}
     for key in sh.COLOR_SCHEME_KEYS:
-        color_scheme[key] = CONF.get("color_schemes", "%s/%s" % (name, key))
+        color_scheme[key] = CONF.get(
+            "appearance",
+            "%s/%s" % (name, key),
+            default=sh.COLOR_SCHEME_DEFAULT_VALUES[key])
     return color_scheme
 
 
 def set_color_scheme(name, color_scheme, replace=True):
     """Set syntax color scheme"""
-    section = "color_schemes"
-    names = CONF.get("color_schemes", "names", [])
+    section = "appearance"
+    names = CONF.get("appearance", "names", [])
     for key in sh.COLOR_SCHEME_KEYS:
         option = "%s/%s" % (name, key)
         value = CONF.get(section, option, default=None)
@@ -162,6 +135,27 @@ def set_default_color_scheme(name, replace=True):
     """Reset color scheme to default values"""
     assert name in sh.COLOR_SCHEME_NAMES
     set_color_scheme(name, sh.get_color_scheme(name), replace=replace)
+
+
+def is_dark_font_color(color_scheme):
+    """Check if the font color used in the color scheme is dark."""
+    color_scheme = get_color_scheme(color_scheme)
+    font_color, fon_fw, fon_fs = color_scheme['normal']
+    return dark_color(font_color)
+
+
+def is_dark_interface():
+    ui_theme = CONF.get('appearance', 'ui_theme')
+    color_scheme = CONF.get('appearance', 'selected')
+    if ui_theme == 'dark':
+        return True
+    elif ui_theme == 'automatic':
+        if not is_dark_font_color(color_scheme):
+            return True
+        else:
+            return False
+    else:
+        return False
 
 
 for _name in sh.COLOR_SCHEME_NAMES:

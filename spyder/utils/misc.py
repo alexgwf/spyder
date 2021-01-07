@@ -7,12 +7,19 @@
 """Miscellaneous utilities"""
 
 import functools
+import logging
 import os
 import os.path as osp
+import re
 import sys
 import stat
+import socket
 
-from spyder.py3compat import is_text_string
+from spyder.py3compat import is_text_string, getcwd
+from spyder.config.base import get_home_dir
+
+
+logger = logging.getLogger(__name__)
 
 
 def __remove_pyc_pyo(fname):
@@ -94,7 +101,8 @@ def count_lines(path, extensions=None, excluded_dirnames=None):
     if extensions is None:
         extensions = ['.py', '.pyw', '.ipy', '.enaml', '.c', '.h', '.cpp',
                       '.hpp', '.inc', '.', '.hh', '.hxx', '.cc', '.cxx',
-                      '.cl', '.f', '.for', '.f77', '.f90', '.f95', '.f2k']
+                      '.cl', '.f', '.for', '.f77', '.f90', '.f95', '.f2k',
+                      '.f03', '.f08']
     if excluded_dirnames is None:
         excluded_dirnames = ['build', 'dist', '.hg', '.svn']
     def get_filelines(path):
@@ -122,26 +130,6 @@ def count_lines(path, extensions=None, excluded_dirnames=None):
         files += dfiles
         lines += dlines
     return files, lines
-
-
-def fix_reference_name(name, blacklist=None):
-    """Return a syntax-valid Python reference name from an arbitrary name"""
-    import re
-    name = "".join(re.split(r'[^0-9a-zA-Z_]', name))
-    while name and not re.match(r'([a-zA-Z]+[0-9a-zA-Z_]*)$', name):
-        if not re.match(r'[a-zA-Z]', name[0]):
-            name = name[1:]
-            continue
-    name = str(name)
-    if not name:
-        name = "data"
-    if blacklist is not None and name in blacklist:
-        get_new_name = lambda index: name+('%03d' % index)
-        index = 0
-        while get_new_name(index) in blacklist:
-            index += 1
-        name = get_new_name(index)
-    return name
 
 
 def remove_backslashes(path):
@@ -235,31 +223,38 @@ def get_common_path(pathlist):
                 return osp.abspath(common)
 
 
-def add_pathlist_to_PYTHONPATH(env, pathlist, drop_env=False,
-                               ipyconsole=False):
+def add_pathlist_to_PYTHONPATH(env, pathlist, drop_env=True):
+    """
+    Add a PYTHONPATH entry to a list of enviroment variables.
+
+    This allows to extend the environment of an external process
+    created with QProcess with our additions to PYTHONPATH.
+
+    Parameters
+    ----------
+    env: list
+        List of environment variables in the format of
+        QProcessEnvironment.
+    pathlist: list
+        List of paths to add to PYTHONPATH
+    drop_env: bool
+        Whether to drop PYTHONPATH previously found in the environment.
+    """
     # PyQt API 1/2 compatibility-related tests:
     assert isinstance(env, list)
     assert all([is_text_string(path) for path in env])
-    
+
     pypath = "PYTHONPATH"
     pathstr = os.pathsep.join(pathlist)
-    if os.environ.get(pypath) is not None and not drop_env:
-        old_pypath = os.environ[pypath]
-        if not ipyconsole:
-            for index, var in enumerate(env[:]):
-                if var.startswith(pypath+'='):
-                    env[index] = var.replace(pypath+'=',
-                                             pypath+'='+pathstr+os.pathsep)
-            env.append('OLD_PYTHONPATH='+old_pypath)
-        else:
-            pypath =  {'PYTHONPATH': pathstr + os.pathsep + old_pypath,
-                       'OLD_PYTHONPATH': old_pypath}
-            return pypath
+    if not drop_env:
+        for index, var in enumerate(env[:]):
+            if var.startswith(pypath + '='):
+                env[index] = var.replace(
+                    pypath + '=',
+                    pypath + '=' + pathstr + os.pathsep
+                )
     else:
-        if not ipyconsole:
-            env.append(pypath+'='+pathstr)
-        else:
-            return {'PYTHONPATH': pathstr}
+        env.append(pypath + '=' + pathstr)
 
 
 def memoize(obj):
@@ -283,3 +278,48 @@ def memoize(obj):
             cache.popitem(last=False)
         return cache[key]
     return memoizer
+
+
+def getcwd_or_home():
+    """Safe version of getcwd that will fallback to home user dir.
+
+    This will catch the error raised when the current working directory
+    was removed for an external program.
+    """
+    try:
+        return getcwd()
+    except OSError:
+        logger.debug("WARNING: Current working directory was deleted, "
+                     "falling back to home dirertory")
+        return get_home_dir()
+
+
+def regexp_error_msg(pattern):
+    """
+    Return None if the pattern is a valid regular expression or
+    a string describing why the pattern is invalid.
+    """
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        return str(e)
+    return None
+
+
+def check_connection_port(address, port):
+    """Verify if `port` is available in `address`."""
+    # Create a TCP socket
+    s = socket.socket()
+    s.settimeout(2)
+    logger.debug("Attempting to connect to {} on port {}".format(
+                 address, port))
+    try:
+        s.connect((address, port))
+        logger.debug("Connected to {} on port {}".format(address, port))
+        return True
+    except socket.error as e:
+        logger.debug("Connection to {} on port {} failed: {}".format(
+                     address, port, e))
+        return False
+    finally:
+        s.close()

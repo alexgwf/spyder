@@ -8,69 +8,31 @@
 Dock widgets for plugins
 """
 
-from qtpy.QtCore import QEvent, QObject, QPoint, Qt, Signal
-from qtpy.QtGui import QCursor
-from qtpy.QtWidgets import QApplication, QDockWidget, QTabBar
+from qtpy.QtCore import QEvent, QObject, Qt, QSize, Signal
+from qtpy.QtWidgets import (QApplication, QDockWidget, QHBoxLayout,
+                            QSizePolicy, QStyle, QTabBar, QToolButton,
+                            QWidget)
+
+from spyder.config.gui import is_dark_interface
+from spyder.utils import icon_manager as ima
 
 
+# =============================================================================
+# Tab filter
+# =============================================================================
 class TabFilter(QObject):
-    """
-    Filter event attached to each QTabBar that holds 2 or more dockwidgets in
-    charge of handling tab rearangement.
-
-    This filter also holds the methods needed for the detection of a drag and
-    the movement of tabs.
-    """
+    """Filter event attached to each DockWidget QTabBar."""
     def __init__(self, dock_tabbar, main):
         QObject.__init__(self)
         self.dock_tabbar = dock_tabbar
         self.main = main
-        self.moving = False
         self.from_index = None
-        self.to_index = None
 
-    # Helper methods
-    def _get_plugin(self, index):
-        """Get plugin reference based on tab index."""
-        for plugin in self.main.widgetlist:
-            tab_text = self.dock_tabbar.tabText(index).replace('&', '')
-            if plugin.get_plugin_title() == tab_text:
-                return plugin
+        # Center dockwidget tabs to differentiate them from plugin tabs.
+        # See spyder-ide/spyder#9763
+        self.dock_tabbar.setStyleSheet("QTabBar {alignment: center;}")
 
-    def _get_plugins(self):
-        """
-        Get a list of all plugin references in the QTabBar to which this
-        event filter is attached.
-        """
-        plugins = []
-        for index in range(self.dock_tabbar.count()):
-            plugin = self._get_plugin(index)
-            plugins.append(plugin)
-        return plugins
-
-    def _fix_cursor(self, from_index, to_index):
-        """Fix mouse cursor position to adjust for different tab sizes."""
-        # The direction is +1 (moving to the right) or -1 (moving to the left)
-        direction = abs(to_index - from_index)/(to_index - from_index)
-
-        tab_width = self.dock_tabbar.tabRect(to_index).width()
-        tab_x_min = self.dock_tabbar.tabRect(to_index).x()
-        tab_x_max = tab_x_min + tab_width
-        previous_width = self.dock_tabbar.tabRect(to_index - direction).width()
-
-        delta = previous_width - tab_width
-        if delta > 0:
-            delta = delta * direction
-        else:
-            delta = 0
-        cursor = QCursor()
-        pos = self.dock_tabbar.mapFromGlobal(cursor.pos())
-        x, y = pos.x(), pos.y()
-        if x < tab_x_min or x > tab_x_max:
-            new_pos = self.dock_tabbar.mapToGlobal(QPoint(x + delta, y))
-            cursor.setPos(new_pos)
-
-    def eventFilter(self,  obj,  event):
+    def eventFilter(self, obj, event):
         """Filter mouse press events.
 
         Events that are captured and not propagated return True. Events that
@@ -80,12 +42,6 @@ class TabFilter(QObject):
         if event_type == QEvent.MouseButtonPress:
             self.tab_pressed(event)
             return False
-        if event_type == QEvent.MouseMove:
-            self.tab_moved(event)
-            return True
-        if event_type == QEvent.MouseButtonRelease:
-            self.tab_released(event)
-            return True
         return False
 
     def tab_pressed(self, event):
@@ -93,53 +49,17 @@ class TabFilter(QObject):
         self.from_index = self.dock_tabbar.tabAt(event.pos())
         self.dock_tabbar.setCurrentIndex(self.from_index)
 
-        if event.button() == Qt.RightButton:
-            if self.from_index == -1:
-                self.show_nontab_menu(event)
-            else:
-                self.show_tab_menu(event)
-
-    def tab_moved(self, event):
-        """Method called when a tab from a QTabBar has been moved."""
-        # If the left button isn't pressed anymore then return
-        if not event.buttons() & Qt.LeftButton:
-            self.to_index = None
-            return
-
-        self.to_index = self.dock_tabbar.tabAt(event.pos())
-
-        if not self.moving and self.from_index != -1 and self.to_index != -1:
-            QApplication.setOverrideCursor(Qt.ClosedHandCursor)
-            self.moving = True
-
-        if self.to_index == -1:
-            self.to_index = self.from_index
-
-        from_index, to_index = self.from_index, self.to_index
-        if from_index != to_index and from_index != -1 and to_index != -1:
-            self.move_tab(from_index, to_index)
-            self._fix_cursor(from_index, to_index)
-            self.from_index = to_index
-
-    def tab_released(self, event):
-        """Method called when a tab from a QTabBar has been released."""
-        QApplication.restoreOverrideCursor()
-        self.moving = False
-
-    def move_tab(self, from_index, to_index):
-        """Move a tab from a given index to a given index position."""
-        plugins = self._get_plugins()
-        from_plugin = self._get_plugin(from_index)
-        to_plugin = self._get_plugin(to_index)
-
-        from_idx = plugins.index(from_plugin)
-        to_idx = plugins.index(to_plugin)
-
-        plugins[from_idx], plugins[to_idx] = plugins[to_idx], plugins[from_idx]
-
-        for i in range(len(plugins)-1):
-            self.main.tabify_plugins(plugins[i], plugins[i+1])
-        from_plugin.dockwidget.raise_()
+        try:
+            if event.button() == Qt.RightButton:
+                if self.from_index == -1:
+                    self.show_nontab_menu(event)
+                else:
+                    self.show_tab_menu(event)
+        except AttributeError:
+            # Needed to avoid an error when generating the
+            # context menu on top of the tab.
+            # See spyder-ide/spyder#11226
+            pass
 
     def show_tab_menu(self, event):
         """Show the context menu assigned to tabs."""
@@ -151,18 +71,157 @@ class TabFilter(QObject):
         menu.exec_(self.dock_tabbar.mapToGlobal(event.pos()))
 
 
+# =============================================================================
+# Title bar
+# =============================================================================
+class DragButton(QToolButton):
+    """
+    Drag button for the title bar.
+
+    This button pass all its mouse events to its parent.
+    """
+
+    def __init__(self, parent, button_size):
+        super(QToolButton, self).__init__(parent)
+        self.parent = parent
+
+        # Style
+        self.setMaximumSize(button_size)
+        self.setAutoRaise(True)
+        self.setIcon(ima.icon('drag-horizontal'))
+        if is_dark_interface():
+            self.setStyleSheet(
+                "QToolButton {"
+                "border-radius: 0px;"
+                "border: 0px;"
+                "background-color: #32414B;}")
+        else:
+            self.setStyleSheet("QToolButton {border: 0px;}")
+
+    def mouseReleaseEvent(self, event):
+        self.parent.mouseReleaseEvent(event)
+
+    def mousePressEvent(self, event):
+        self.parent.mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.parent.mouseMoveEvent(event)
+
+
+class CloseButton(QToolButton):
+    """Close button for the title bar."""
+
+    def __init__(self, parent, button_size):
+        super(QToolButton, self).__init__(parent)
+
+        # Style
+        self.setMaximumSize(button_size)
+        self.setAutoRaise(True)
+        self.setCursor(Qt.ArrowCursor)
+        if is_dark_interface():
+            self.setStyleSheet(
+                "QToolButton {"
+                "border-radius: 0px;"
+                "border: 0px;"
+                "image: url(:/qss_icons/rc/close.png);"
+                "background-color: #32414B;}"
+                "QToolButton:hover {"
+                "image: url(:/qss_icons/rc/close-hover.png);}")
+        else:
+            self.setIcon(QApplication.style().standardIcon(
+                QStyle.SP_DockWidgetCloseButton))
+
+
+class DockTitleBar(QWidget):
+    """
+    Custom title bar for our dock widgets.
+
+    Inspired from
+    https://stackoverflow.com/a/40894225/438386
+    """
+
+    def __init__(self, parent):
+        super(DockTitleBar, self).__init__(parent)
+
+        icon_size = QApplication.style().standardIcon(
+            QStyle.SP_TitleBarNormalButton).actualSize(QSize(100, 100))
+        button_size = icon_size + QSize(8, 8)
+
+        left_spacer = QWidget(self)
+        left_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        if is_dark_interface():
+            left_spacer.setStyleSheet("background-color: #32414B")
+
+        drag_button = DragButton(self, button_size)
+
+        right_spacer = QWidget(self)
+        right_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        if is_dark_interface():
+            right_spacer.setStyleSheet("background-color: #32414B")
+
+        close_button = CloseButton(self, button_size)
+        close_button.clicked.connect(parent.sig_plugin_closed.emit)
+
+        hlayout = QHBoxLayout(self)
+        hlayout.setSpacing(0)
+        hlayout.setContentsMargins(0, 0, 0, 0)
+        hlayout.addWidget(left_spacer)
+        hlayout.addWidget(drag_button)
+        hlayout.addWidget(right_spacer)
+        hlayout.addWidget(close_button)
+
+        # To signal that dock widgets can be dragged from here
+        self.setCursor(Qt.SizeAllCursor)
+
+    def mouseReleaseEvent(self, event):
+        self.setCursor(Qt.SizeAllCursor)
+        QWidget.mouseReleaseEvent(self, event)
+
+    def mousePressEvent(self, event):
+        self.setCursor(Qt.ClosedHandCursor)
+        QWidget.mousePressEvent(self, event)
+
+    def mouseMoveEvent(self, event):
+        QWidget.mouseMoveEvent(self, event)
+        self.setCursor(Qt.SizeAllCursor)
+
+
 class SpyderDockWidget(QDockWidget):
     """Subclass to override needed methods"""
-    plugin_closed = Signal()
+
+    # Attributes
+    ALLOWED_AREAS = Qt.AllDockWidgetAreas
+    LOCATION = Qt.LeftDockWidgetArea
+    FEATURES = QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable
+
+    # Signals
+    sig_plugin_closed = Signal()
 
     def __init__(self, title, parent):
         super(SpyderDockWidget, self).__init__(title, parent)
 
-        # Needed for the installation of the event filter
         self.title = title
-        self.main = parent
-        self.dock_tabbar = None
 
+        # Widgets
+        self.main = parent
+        self.empty_titlebar = QWidget(self)
+        self.titlebar = DockTitleBar(self)
+        self.dock_tabbar = None  # Needed for event filter
+
+        # Layout
+        # Prevent message on internal console
+        # See: https://bugreports.qt.io/browse/QTBUG-42986
+        layout = QHBoxLayout(self.empty_titlebar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.empty_titlebar.setLayout(layout)
+        self.empty_titlebar.setMinimumSize(0, 0)
+        self.empty_titlebar.setMaximumSize(0, 0)
+
+        # Setup
+        self.set_title_bar()
+
+        # Signals
         # To track dockwidget changes the filter is installed when dockwidget
         # visibility changes. This installs the filter on startup and also
         # on dockwidgets that are undocked and then docked to a new location.
@@ -173,7 +232,7 @@ class SpyderDockWidget(QDockWidget):
         Reimplement Qt method to send a signal on close so that "Panes" main
         window menu can be updated correctly
         """
-        self.plugin_closed.emit()
+        self.sig_plugin_closed.emit()
 
     def install_tab_event_filter(self, value):
         """
@@ -188,6 +247,7 @@ class SpyderDockWidget(QDockWidget):
                 if title == self.title:
                     dock_tabbar = tabbar
                     break
+
         if dock_tabbar is not None:
             self.dock_tabbar = dock_tabbar
             # Install filter only once per QTabBar
@@ -195,3 +255,11 @@ class SpyderDockWidget(QDockWidget):
                 self.dock_tabbar.filter = TabFilter(self.dock_tabbar,
                                                     self.main)
                 self.dock_tabbar.installEventFilter(self.dock_tabbar.filter)
+
+    def remove_title_bar(self):
+        """Set empty qwidget on title bar."""
+        self.setTitleBarWidget(self.empty_titlebar)
+
+    def set_title_bar(self):
+        """Set custom title bar."""
+        self.setTitleBarWidget(self.titlebar)

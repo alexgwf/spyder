@@ -1,97 +1,152 @@
 # -*- coding: utf-8 -*-
-#
+# ----------------------------------------------------------------------------
 # Copyright © Spyder Project Contributors
+#
 # Licensed under the terms of the MIT License
 # (see spyder/__init__.py for details)
+# ----------------------------------------------------------------------------
 
 """Status bar widgets."""
 
 # Standard library imports
 import os
+import os.path as osp
+import sys
 
 # Third party imports
-from qtpy.QtCore import Qt, QTimer
-from qtpy.QtWidgets import QHBoxLayout, QLabel, QWidget
+from qtpy.QtCore import Qt, QPoint, QSize, QTimer, Signal
+from qtpy.QtGui import QFont, QIcon
+from qtpy.QtWidgets import QHBoxLayout, QLabel, QMenu, QWidget
 
 # Local imports
-from spyder import dependencies
 from spyder.config.base import _
-from spyder.config.gui import get_font
-from spyder.py3compat import to_text_string
-
-
-if not os.name == 'nt':
-    PSUTIL_REQVER = '>=0.3'
-    dependencies.add("psutil", _("CPU and memory usage info in the status bar"),
-                     required_version=PSUTIL_REQVER)
+from spyder.config.manager import CONF
+from spyder.utils.conda import get_list_conda_envs
+from spyder.utils.programs import get_interpreter_info
+from spyder.utils.pyenv import get_list_pyenv_envs
+from spyder.utils.qthelpers import (add_actions, create_action,
+                                    create_waitspinner)
+from spyder.utils.workers import WorkerManager
 
 
 class StatusBarWidget(QWidget):
     """Status bar widget base."""
+    # Signals
+    sig_clicked = Signal()
 
-    def __init__(self, parent, statusbar):
+    def __init__(self, parent, statusbar, icon=None, spinner=False):
         """Status bar widget base."""
         super(StatusBarWidget, self).__init__(parent)
-        self.label_font = get_font(option='rich_font')
-        self.label_font.setPointSize(self.font().pointSize())
-        self.label_font.setBold(True)
 
-        # Layouts
-        layout = QHBoxLayout()
+        # Variables
+        self.value = None
+
+        # Widget
+        self._status_bar = statusbar
+        self._icon = None
+        self._pixmap = None
+        self._icon_size = QSize(16, 16)  # Should this be adjustable?
+        self.label_icon = QLabel()
+        self.label_value = QLabel()
+        self.spinner = None
+        if spinner:
+            self.spinner = create_waitspinner(size=14, parent=self)
+
+        # Layout setup
+        layout = QHBoxLayout(self)
+        layout.setSpacing(0)  # Reduce space between icon and label
+        layout.addWidget(self.label_icon)
+        layout.addWidget(self.label_value)
+        if spinner:
+            layout.addWidget(self.spinner)
+            self.spinner.hide()
+        layout.addSpacing(20)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(layout)
+
+        # Widget setup
+        self.set_icon(icon)
+
+        # See spyder-ide/spyder#9044.
+        self.text_font = QFont(QFont().defaultFamily(), weight=QFont.Normal)
+        self.label_value.setAlignment(Qt.AlignRight)
+        self.label_value.setFont(self.text_font)
 
         # Setup
         statusbar.addPermanentWidget(self)
+        self.set_value('')
+        self.update_tooltip()
+
+    # --- Status bar widget API
+    # ------------------------------------------------------------------------
+    def set_icon(self, icon):
+        """Set the icon for the status bar widget."""
+        self.label_icon.setVisible(icon is not None)
+        if icon is not None and isinstance(icon, QIcon):
+            self._icon = icon
+            self._pixmap = icon.pixmap(self._icon_size)
+            self.label_icon.setPixmap(self._pixmap)
+
+    def set_value(self, value):
+        """Set formatted text value."""
+        self.value = value
+        self.label_value.setText(value)
+
+    def update_tooltip(self):
+        """Update tooltip for widget."""
+        tooltip = self.get_tooltip()
+        if tooltip:
+            self.label_value.setToolTip(tooltip)
+            if self.label_icon:
+                self.label_icon.setToolTip(tooltip)
+            self.setToolTip(tooltip)
+
+    def mouseReleaseEvent(self, event):
+        """Override Qt method to allow for click signal."""
+        super(StatusBarWidget, self).mousePressEvent(event)
+        self.sig_clicked.emit()
+
+    # --- API to be defined by user
+    # ------------------------------------------------------------------------
+    def get_tooltip(self):
+        """Return the widget tooltip text."""
+        return ''
+
+    def get_icon(self):
+        """Return the widget tooltip text."""
+        return None
 
 
-# =============================================================================
-# Main window-related status bar widgets
-# =============================================================================
 class BaseTimerStatus(StatusBarWidget):
     """Status bar widget base for widgets that update based on timers."""
 
-    TITLE = None
-    TIP = None
-
-    def __init__(self, parent, statusbar):
+    def __init__(self, parent, statusbar, icon=None):
         """Status bar widget base for widgets that update based on timers."""
-        super(BaseTimerStatus, self).__init__(parent, statusbar)
-
-        # Widgets
-        self.label = QLabel(self.TITLE)
-        self.value = QLabel()
+        self.timer = None  # Needs to come before parent call
+        super(BaseTimerStatus, self).__init__(parent, statusbar, icon=icon)
+        self._interval = 2000
 
         # Widget setup
-        self.setToolTip(self.TIP)
-        self.value.setAlignment(Qt.AlignRight)
-        self.value.setFont(self.label_font)
-        fm = self.value.fontMetrics()
-        self.value.setMinimumWidth(fm.width('000%'))
-
-        # Layout
-        layout = self.layout()
-        layout.addWidget(self.label)
-        layout.addWidget(self.value)
-        layout.addSpacing(20)
+        fm = self.label_value.fontMetrics()
+        self.label_value.setMinimumWidth(fm.width('000%'))
 
         # Setup
         if self.is_supported():
             self.timer = QTimer()
-            self.timer.timeout.connect(self.update_label)
-            self.timer.start(2000)
+            self.timer.timeout.connect(self.update_status)
+            self.timer.start(self._interval)
         else:
-            self.timer = None
             self.hide()
-    
-    def set_interval(self, interval):
-        """Set timer interval (ms)."""
+
+    # --- Status bar widget API
+    # ------------------------------------------------------------------------
+    def setVisible(self, value):
+        """Override Qt method to stops timers if widget is not visible."""
         if self.timer is not None:
-            self.timer.setInterval(interval)
-    
-    def import_test(self):
-        """Raise ImportError if feature is not supported."""
-        raise NotImplementedError
+            if value:
+                self.timer.start(self._interval)
+            else:
+                self.timer.stop()
+        super(BaseTimerStatus, self).setVisible(value)
 
     def is_supported(self):
         """Return True if feature is supported."""
@@ -100,23 +155,34 @@ class BaseTimerStatus(StatusBarWidget):
             return True
         except ImportError:
             return False
-    
-    def get_value(self):
-        """Return value (e.g. CPU or memory usage)."""
-        raise NotImplementedError
-        
-    def update_label(self):
+
+    def update_status(self):
         """Update status label widget, if widget is visible."""
         if self.isVisible():
-            self.value.setText('%d %%' % self.get_value())
+            self.label_value.setText(self.get_value())
+
+    def set_interval(self, interval):
+        """Set timer interval (ms)."""
+        self._interval = interval
+        if self.timer is not None:
+            self.timer.setInterval(interval)
+
+    # --- API to be defined by user
+    # ------------------------------------------------------------------------
+    def import_test(self):
+        """Raise ImportError if feature is not supported."""
+        raise NotImplementedError
+
+    def get_value(self):
+        """Return formatted text value."""
+        raise NotImplementedError
 
 
+# =============================================================================
+# Main window-related status bar widgets
+# =============================================================================
 class MemoryStatus(BaseTimerStatus):
     """Status bar widget for system memory usage."""
-
-    TITLE = _("Memory:")
-    TIP = _("Memory usage status: "
-            "requires the `psutil` (>=v0.3) library on non-Windows platforms")
 
     def import_test(self):
         """Raise ImportError if feature is not supported."""
@@ -125,14 +191,20 @@ class MemoryStatus(BaseTimerStatus):
     def get_value(self):
         """Return memory usage."""
         from spyder.utils.system import memory_usage
-        return memory_usage()
+        text = '%d%%' % memory_usage()
+        return 'Mem ' + text.rjust(3)
+
+    def get_tooltip(self):
+        """Return the widget tooltip text."""
+        return _('Memory usage')
+
+    def get_icon(self):
+        """Return the widget tooltip text."""
+        return QIcon()
 
 
 class CPUStatus(BaseTimerStatus):
     """Status bar widget for system cpu usage."""
-
-    TITLE = _("CPU:")
-    TIP = _("CPU usage status: requires the `psutil` (>=v0.3) library")
 
     def import_test(self):
         """Raise ImportError if feature is not supported."""
@@ -145,121 +217,203 @@ class CPUStatus(BaseTimerStatus):
     def get_value(self):
         """Return CPU usage."""
         import psutil
-        return psutil.cpu_percent(interval=0)
+        text = '%d%%' % psutil.cpu_percent(interval=0)
+        return 'CPU ' + text.rjust(3)
+
+    def get_tooltip(self):
+        """Return the widget tooltip text."""
+        return _('CPU usage')
+
+    def get_icon(self):
+        """Return the widget tooltip text."""
+        return QIcon()
 
 
-# =============================================================================
-# Editor-related status bar widgets
-# =============================================================================
-class ReadWriteStatus(StatusBarWidget):    
-    """Status bar widget for current file read/write mode."""
+class InterpreterStatus(BaseTimerStatus):
+    """Status bar widget for displaying the current conda environment."""
 
-    def __init__(self, parent, statusbar):
-        """Status bar widget for current file read/write mode."""
-        super(ReadWriteStatus, self).__init__(parent, statusbar)
+    def __init__(self, parent, statusbar, icon=None, interpreter=None):
+        """Status bar widget for displaying the current conda environment."""
+        self._interpreter = interpreter
+        super(InterpreterStatus, self).__init__(parent, statusbar, icon=icon)
 
-        # Widget
-        self.label = QLabel(_("Permissions:"))
-        self.readwrite = QLabel()
+        self.main = parent
+        self.env_actions = []
+        self.path_to_env = {}
+        self.envs = {}
+        self.value = ''
 
-        # Widget setup
-        self.label.setAlignment(Qt.AlignRight)
-        self.readwrite.setFont(self.label_font)
+        self.menu = QMenu(self)
+        self.sig_clicked.connect(self.show_menu)
 
-        # Layouts
-        layout = self.layout()
-        layout.addWidget(self.label)
-        layout.addWidget(self.readwrite)
-        layout.addSpacing(20)
-        
-    def readonly_changed(self, readonly):
-        """Update read/write file status."""
-        readwrite = "R" if readonly else "RW"
-        self.readwrite.setText(readwrite.ljust(3))
+        # Worker to compute envs in a thread
+        self._worker_manager = WorkerManager(max_threads=1)
+
+        # Timer to get envs every minute
+        self._get_envs_timer = QTimer(self)
+        self._get_envs_timer.setInterval(60000)
+        self._get_envs_timer.timeout.connect(self.get_envs)
+        self._get_envs_timer.start()
+
+        # Update the list of envs at startup
+        self.get_envs()
+
+    def import_test(self):
+        pass
+
+    def get_value(self):
+        """
+        Switch to default interpreter if current env was removed or
+        update Python version of current one.
+        """
+        env_dir = self._get_env_dir(self._interpreter)
+
+        if not osp.isdir(env_dir):
+            # Env was removed on Mac or Linux
+            CONF.set('main_interpreter', 'custom', False)
+            CONF.set('main_interpreter', 'default', True)
+            self.update_interpreter(sys.executable)
+        elif not osp.isfile(self._interpreter):
+            # This can happen on Windows because the interpreter was
+            # renamed to .conda_trash
+            if not osp.isdir(osp.join(env_dir, 'conda-meta')):
+                # If conda-meta is missing, it means the env was removed
+                CONF.set('main_interpreter', 'custom', False)
+                CONF.set('main_interpreter', 'default', True)
+                self.update_interpreter(sys.executable)
+            else:
+                # If not, it means the interpreter is being updated so
+                # we need to update its version
+                self.get_envs()
+        else:
+            # We need to do this in case the Python version was
+            # changed in the env
+            if self._interpreter in self.path_to_env:
+                self.update_interpreter()
+
+        return self.value
+
+    def _get_env_dir(self, interpreter):
+        """Get env directory from interpreter executable."""
+        if os.name == 'nt':
+            return osp.dirname(interpreter)
+        else:
+            return osp.dirname(osp.dirname(interpreter))
+
+    def _get_envs(self):
+        """Get the list of environments in the system."""
+        # Compute info of default interpreter to have it available in
+        # case we need to switch to it. This will avoid lags when
+        # doing that in get_value.
+        if sys.executable not in self.path_to_env:
+            self._get_env_info(sys.executable)
+
+        # Get envs
+        conda_env = get_list_conda_envs()
+        pyenv_env = get_list_pyenv_envs()
+        return {**conda_env, **pyenv_env}
+
+    def get_envs(self):
+        """
+        Get the list of environments in a thread to keep them up to
+        date.
+        """
+        self._worker_manager.terminate_all()
+        worker = self._worker_manager.create_python_worker(self._get_envs)
+        worker.sig_finished.connect(self.update_envs)
+        worker.start()
+
+    def update_envs(self, worker, output, error):
+        """Update the list of environments in the system."""
+        self.envs.update(**output)
+        for env in list(self.envs.keys()):
+            path, version = self.envs[env]
+            # Save paths in lowercase on Windows to avoid issues with
+            # capitalization.
+            path = path.lower() if os.name == 'nt' else path
+            self.path_to_env[path] = env
+
+        self.update_interpreter()
+
+    def show_menu(self):
+        """Display a menu when clicking on the widget."""
+        menu = self.menu
+        menu.clear()
+        text = _("Change default environment in Preferences...")
+        change_action = create_action(
+            self,
+            text=text,
+            triggered=self.open_interpreter_preferences,
+        )
+        add_actions(menu, [change_action])
+        rect = self.contentsRect()
+        os_height = 7 if os.name == 'nt' else 12
+        pos = self.mapToGlobal(
+                rect.topLeft() + QPoint(-40, -rect.height() - os_height))
+        menu.popup(pos)
+
+    def open_interpreter_preferences(self):
+        """Open the Preferences dialog in the Python interpreter section."""
+        self.main.show_preferences()
+        dlg = self.main.prefs_dialog_instance
+        index = dlg.get_index_by_name("main_interpreter")
+        dlg.set_current_index(index)
+
+    def _get_env_info(self, path):
+        """Get environment information."""
+        path = path.lower() if os.name == 'nt' else path
+        try:
+            name = self.path_to_env[path]
+        except KeyError:
+            win_app_path = osp.join(
+                'AppData', 'Local', 'Programs', 'spyder')
+            if 'Spyder.app' in path or win_app_path in path:
+                name = 'internal'
+            elif 'conda' in path:
+                name = 'conda'
+            elif 'pyenv' in path:
+                name = 'pyenv'
+            else:
+                name = 'custom'
+            version = get_interpreter_info(path)
+            self.path_to_env[path] = name
+            self.envs[name] = (path, version)
+        __, version = self.envs[name]
+        return f'{name} ({version})'
+
+    def get_tooltip(self):
+        """Override api method."""
+        return self._interpreter if self._interpreter else ''
+
+    def update_interpreter(self, interpreter=None):
+        """Set main interpreter and update information."""
+        if interpreter:
+            self._interpreter = interpreter
+        self.value = self._get_env_info(self._interpreter)
+        self.set_value(self.value)
+        self.update_tooltip()
 
 
-class EOLStatus(StatusBarWidget):
-    """Status bar widget for the current file end of line."""
+class ClockStatus(BaseTimerStatus):
+    """"Add clock to statusbar in a fullscreen mode."""
 
-    def __init__(self, parent, statusbar):
-        """Status bar widget for the current file end of line."""
-        super(EOLStatus, self).__init__(parent, statusbar)
+    def import_test(self):
+        pass
 
-        # Widget
-        self.label = QLabel(_("End-of-lines:"))
-        self.eol = QLabel()
+    def get_value(self):
+        """Return the time."""
+        from time import localtime, strftime
+        text = strftime("%H:%M", localtime())
 
-        # Widget setup
-        self.label.setAlignment(Qt.AlignRight)
-        self.eol.setFont(self.label_font)
+        return text.rjust(3)
 
-        # Layouts
-        layout = self.layout()
-        layout.addWidget(self.label)
-        layout.addWidget(self.eol)
-        layout.addSpacing(20)
-        
-    def eol_changed(self, os_name):
-        """Update end of line status."""
-        os_name = to_text_string(os_name)
-        self.eol.setText({"nt": "CRLF", "posix": "LF"}.get(os_name, "CR"))
+    def get_tooltip(self):
+        """Return the widget tooltip text."""
+        return _('Clock')
 
-
-class EncodingStatus(StatusBarWidget):
-    """Status bar widget for the current file encoding."""
-
-    def __init__(self, parent, statusbar):
-        """Status bar widget for the current file encoding."""
-        super(EncodingStatus, self).__init__(parent, statusbar)
-
-        # Widgets
-        self.label = QLabel(_("Encoding:"))
-        self.encoding = QLabel()
-
-        # Widget setup
-        self.label.setAlignment(Qt.AlignRight)
-        self.encoding.setFont(self.label_font)
-
-        # Layouts
-        layout = self.layout()
-        layout.addWidget(self.label)
-        layout.addWidget(self.encoding)
-        layout.addSpacing(20)
-        
-    def encoding_changed(self, encoding):
-        """Update encoding of current file."""
-        self.encoding.setText(str(encoding).upper().ljust(15))
-
-
-class CursorPositionStatus(StatusBarWidget):
-    """Status bar widget for the current file cursor postion."""
-
-    def __init__(self, parent, statusbar):
-        """Status bar widget for the current file cursor postion."""
-        super(CursorPositionStatus, self).__init__(parent, statusbar)
-
-        # Widget
-        self.label_line = QLabel(_("Line:"))
-        self.label_column = QLabel(_("Column:"))
-        self.column = QLabel()
-        self.line = QLabel()
-
-        # Widget setup
-        self.line.setFont(self.label_font)
-        self.column.setFont(self.label_font)
-
-        # Layout
-        layout = self.layout()
-        layout.addWidget(self.label_line)
-        layout.addWidget(self.line)
-        layout.addWidget(self.label_column)
-        layout.addWidget(self.column)
-        self.setLayout(layout)
-        
-    def cursor_position_changed(self, line, index):
-        """Update cursos position."""
-        self.line.setText("%-6d" % (line+1))
-        self.column.setText("%-4d" % (index+1))
+    def get_icon(self):
+        """Return the widget tooltip text."""
+        return QIcon()
 
 
 def test():
@@ -271,11 +425,10 @@ def test():
     win.setWindowTitle("Status widgets test")
     win.resize(900, 300)
     statusbar = win.statusBar()
-    swidgets = []
-    for klass in (ReadWriteStatus, EOLStatus, EncodingStatus,
-                  CursorPositionStatus, MemoryStatus, CPUStatus):
-        swidget = klass(win, statusbar)
-        swidgets.append(swidget)
+    status_widgets = []
+    for status_class in (MemoryStatus, CPUStatus, ClockStatus):
+        status_widget = status_class(win, statusbar)
+        status_widgets.append(status_widget)
     win.show()
     app.exec_()
 

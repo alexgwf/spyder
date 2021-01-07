@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Spyder License Agreement (MIT License)
---------------------------------------
+MIT License
+===========
 
-Copyright (c) Spyder Project Contributors
+The spyder/images dir and some source files under other terms (see NOTICE.txt).
+
+Copyright (c) 2009- Spyder Project Contributors and others (see AUTHORS.txt)
 
 Permission is hereby granted, free of charge, to any person
 obtaining a copy of this software and associated documentation
@@ -27,12 +29,19 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 """
 
-version_info = (4, 0, 0, "dev0")
+version_info = (5, 0, 0, "dev0")
 
 __version__ = '.'.join(map(str, version_info))
+__installer_version__ = __version__
+__title__ = 'Spyder'
+__author__ = 'Spyder Project Contributors and others'
 __license__ = __doc__
 __project_url__ = 'https://github.com/spyder-ide/spyder'
-__forum_url__   = 'http://groups.google.com/group/spyderlib'
+__forum_url__   = 'https://groups.google.com/group/spyderlib'
+__trouble_url__ = 'https://docs.spyder-ide.org/current/first-steps.html'
+__trouble_url_short__ = 'https://tinyurl.com/SpyderHelp'
+__website_url__ = 'https://www.spyder-ide.org/'
+__docs_url__ = 'https://docs.spyder-ide.org/'
 
 # Dear (Debian, RPM, ...) package makers, please feel free to customize the
 # following path to module's data (images) and translations:
@@ -41,8 +50,7 @@ DATAPATH = LOCALEPATH = DOCPATH = MATHJAXPATH = JQUERYPATH = ''
 
 import os
 # Directory of the current file
-__dir__ = os.path.dirname(os.path.abspath(__file__))
-
+__current_directory__ = os.path.dirname(os.path.abspath(__file__))
 
 def add_to_distribution(dist):
     """Add package to py2exe/cx_Freeze distribution object
@@ -70,7 +78,8 @@ def get_versions(reporev=True):
     revision = None
     if reporev:
         from spyder.utils import vcs
-        revision, branch = vcs.get_git_revision(os.path.dirname(__dir__))
+        revision, branch = vcs.get_git_revision(
+            os.path.dirname(__current_directory__))
 
     if not sys.platform == 'darwin':  # To avoid a crash with our Mac app
         system = platform.system()
@@ -82,8 +91,10 @@ def get_versions(reporev=True):
         'python': platform.python_version(),  # "2.7.3"
         'bitness': 64 if sys.maxsize > 2**32 else 32,
         'qt': qtpy.QtCore.__version__,
-        'qt_api': qtpy.API_NAME,      # PyQt5 or PyQt4
+        'qt_api': qtpy.API_NAME,      # PyQt5
         'qt_api_ver': qtpy.PYQT_VERSION,
         'system': system,   # Linux, Windows, ...
-        'revision': revision,  # '9fdf926eccce'
+        'release': platform.release(),  # XP, 10.6, 2.2.0, etc.
+        'revision': revision,  # '9fdf926eccce',
+        'branch': branch,  # '4.x' or master
     }

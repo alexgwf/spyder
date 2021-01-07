@@ -1,17 +1,25 @@
+# -*- coding: utf-8 -*-
+# -----------------------------------------------------------------------------
 # Copyright (c) 2005 Divmod, Inc.
-# Copyright (c) Twisted Matrix Laboratories.
-# Copyright (c) Spyder Project Contributors
-# Twisted is distributed under the MIT license.
+# Copyright (c) 2008-2011 Twisted Matrix Laboratories
+# Copyright (c) 2012- Spyder Project Contributors
+#
+# Distributed under the terms of the MIT (Expat) License
+# (see LICENSE.txt in this directory and NOTICE.txt in the root for details)
+# -----------------------------------------------------------------------------
 
 """
 Filesystem-based interprocess mutex.
 
 Taken from the Twisted project.
-Distributed under the MIT license.
+Distributed under the MIT (Expat) license.
 
 Changes by the Spyder Team to the original module:
   * Rewrite kill Windows function to make it more reliable.
   * Detect if the process that owns the lock is an Spyder one.
+
+Adapted from src/twisted/python/lockfile.py of the
+`Twisted project <https://github.com/twisted/twisted>`_.
 """
 
 __metaclass__ = type
@@ -19,8 +27,8 @@ __metaclass__ = type
 import errno, os
 from time import time as _uniquefloat
 
-import psutil
 from spyder.py3compat import PY2, to_binary_string
+from spyder.utils.programs import is_spyder_process
 
 def unique():
     if PY2:
@@ -41,20 +49,20 @@ else:
     import ctypes
     from ctypes import wintypes
 
-    # http://msdn.microsoft.com/en-us/library/windows/desktop/ms684880(v=vs.85).aspx
+    # https://docs.microsoft.com/en-us/windows/desktop/ProcThread/process-security-and-access-rights
     PROCESS_QUERY_INFORMATION = 0x400
 
     # GetExitCodeProcess uses a special exit code to indicate that the
     # process is still running.
     STILL_ACTIVE = 259
-    
+
     def _is_pid_running(pid):
-        """Taken from http://www.madebuild.org/blog/?p=30"""
+        """Taken from https://www.madebuild.org/blog/?p=30"""
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid)
         if handle == 0:
             return False
-         
+
         # If the process exited recently, a pid may still exist for the
         # handle. So, check if we can get the exit code.
         exit_code = wintypes.DWORD()
@@ -62,7 +70,7 @@ else:
                                              ctypes.byref(exit_code))
         is_running = (retval == 0)
         kernel32.CloseHandle(handle)
-         
+
         # See if we couldn't get the exit code or the exit code indicates
         # that the process is still running.
         return is_running or exit_code.value == STILL_ACTIVE
@@ -72,7 +80,7 @@ else:
             raise OSError(errno.ESRCH, None)
         else:
             return
-            
+
     _open = open
 
     # XXX Implement an atomic thingamajig for win32
@@ -87,8 +95,14 @@ else:
         try:
             rename(newlinkname, filename)
         except:
-            os.remove(newvalname)
-            os.rmdir(newlinkname)
+            # This is needed to avoid an error when we don't
+            # have permissions to write in ~/.spyder
+            # See issues 6319 and 9093
+            try:
+                os.remove(newvalname)
+                os.rmdir(newlinkname)
+            except (IOError, OSError):
+                return
             raise
 
     def readlink(filename):   #analysis:ignore
@@ -175,18 +189,7 @@ class FilesystemLock:
                     try:
                         if kill is not None:
                             kill(int(pid), 0)
-                        # Verify that the running process corresponds to
-                        # a Spyder one
-                        p = psutil.Process(int(pid))
-                        if os.name == 'nt':
-                            conditions = ['spyder' in c.lower()
-                                          for c in p.cmdline()]
-                        else:
-                            conditions = [p.name() == 'spyder',
-                                          p.name() == 'spyder3']
-                        # For DEV
-                        conditions += ['bootstrap.py' in p.cmdline()]
-                        if not any(conditions):
+                        if not is_spyder_process(int(pid)):
                             raise(OSError(errno.ESRCH, 'No such process'))
                     except OSError as e:
                         if e.errno == errno.ESRCH:

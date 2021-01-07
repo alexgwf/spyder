@@ -1,27 +1,246 @@
 # -*- coding: utf-8 -*-
-#-----------------------------------------------------------------------------
-# Copyright (c) IPython Development Team.
+# -----------------------------------------------------------------------------
+# Copyright (c) 2010 IPython Development Team
+# Copyright (c) 2013- Spyder Project Contributors
 #
-# Distributed under the terms of the Modified BSD License.
-#
-# The full license is in the file COPYING.txt, distributed with IPython.
-#-----------------------------------------------------------------------------
+# Distributed under the terms of the Modified BSD License
+# (BSD 3-clause; see NOTICE.txt in the Spyder root directory for details).
+# -----------------------------------------------------------------------------
 
 """
-Calltip widget used only to show signatures
+Calltip widget used only to show signatures.
+
+Adapted from IPython/frontend/qt/console/call_tip_widget.py of the
+`IPython Project <https://github.com/ipython/ipython>`_.
+Now located at qtconsole/call_tip_widget.py as part of the
+`Jupyter QtConsole Project <https://github.com/jupyter/qtconsole>`_.
 """
 
 # Standard library imports
 from unicodedata import category
+import os
+import sys
 
 # Third party imports
-from qtpy.QtCore import QBasicTimer, QCoreApplication, QEvent, Qt
+from qtpy.QtCore import (QBasicTimer, QCoreApplication, QEvent, Qt, QTimer,
+                         Signal)
 from qtpy.QtGui import QCursor, QPalette
-from qtpy.QtWidgets import (QFrame, QLabel, QTextEdit, QPlainTextEdit, QStyle,
-                            QStyleOptionFrame, QStylePainter, QToolTip)
+from qtpy.QtWidgets import (QApplication, QFrame, QLabel, QTextEdit,
+                            QPlainTextEdit, QStyle, QStyleOptionFrame,
+                            QStylePainter, QToolTip)
 
 # Local imports
 from spyder.py3compat import to_text_string
+
+
+class ToolTipWidget(QLabel):
+    """
+    Shows tooltips that can be styled with the different themes.
+    """
+
+    sig_completion_help_requested = Signal(str, str)
+    sig_help_requested = Signal(str)
+
+    def __init__(self, parent=None, as_tooltip=False):
+        """
+        Shows tooltips that can be styled with the different themes.
+        """
+        super(ToolTipWidget, self).__init__(None, Qt.ToolTip)
+
+        # Variables
+        self.completion_doc = None
+        self._url = ''
+        self.app = QCoreApplication.instance()
+        self.as_tooltip = as_tooltip
+        self.tip = None
+        self._timer_hide = QTimer()
+        self._text_edit = parent
+
+        # Setup
+        # This keeps the hints below other applications
+        if sys.platform == 'darwin':
+            self.setWindowFlags(Qt.SplashScreen)
+        else:
+            self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+
+        self._timer_hide.setInterval(500)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.setOpenExternalLinks(False)
+        self.setForegroundRole(QPalette.ToolTipText)
+        self.setBackgroundRole(QPalette.ToolTipBase)
+        self.setPalette(QToolTip.palette())
+        self.setAlignment(Qt.AlignLeft)
+        self.setIndent(1)
+        self.setFrameStyle(QFrame.NoFrame)
+        style = self.style()
+        delta_margin = style.pixelMetric(QStyle.PM_ToolTipLabelFrameWidth,
+                                         None, self)
+        self.setMargin(1 + delta_margin)
+
+        # Signals
+        self.linkHovered.connect(self._update_hover_html_link_style)
+        self._timer_hide.timeout.connect(self.hide)
+        QApplication.instance().applicationStateChanged.connect(
+            self._should_hide)
+
+    def paintEvent(self, event):
+        """Reimplemented to paint the background panel."""
+        painter = QStylePainter(self)
+        option = QStyleOptionFrame()
+        option.initFrom(self)
+        painter.drawPrimitive(QStyle.PE_PanelTipLabel, option)
+        painter.end()
+
+        super(ToolTipWidget, self).paintEvent(event)
+
+    def _update_hover_html_link_style(self, url):
+        """Update style of labels that include rich text and html links."""
+        link = 'text-decoration:none;'
+        link_hovered = 'text-decoration:underline;'
+        self._url = url
+
+        if url:
+            QApplication.setOverrideCursor(QCursor(Qt.PointingHandCursor))
+            new_text, old_text = link_hovered, link
+        else:
+            new_text, old_text = link, link_hovered
+            QApplication.restoreOverrideCursor()
+
+        text = self.text()
+        new_text = text.replace(old_text, new_text)
+
+        self.setText(new_text)
+
+    # ------------------------------------------------------------------------
+    # --- 'ToolTipWidget' interface
+    # ------------------------------------------------------------------------
+    def show_basic_tip(self, point, tip):
+        """Show basic tip."""
+        self.tip = tip
+        self.setText(tip)
+        self.resize(self.sizeHint())
+        y = point.y() - self.height()
+        self.move(point.x(), y)
+        self.show()
+        return True
+
+    def show_tip(self, point, tip, cursor=None, completion_doc=None):
+        """
+        Attempts to show the specified tip at the current cursor location.
+        """
+        # Don't show the widget if the main window is not focused
+        if QApplication.instance().applicationState() != Qt.ApplicationActive:
+            return
+
+        # Set the text and resize the widget accordingly.
+        self.tip = tip
+        self.setText(tip)
+        self.resize(self.sizeHint())
+
+        self.completion_doc = completion_doc
+
+        padding = 0
+        text_edit = self._text_edit
+        if cursor is None:
+            cursor_rect = text_edit.cursorRect()
+        else:
+            cursor_rect = text_edit.cursorRect(cursor)
+
+        screen_rect = self.app.desktop().screenGeometry(text_edit)
+        point.setY(point.y() + padding)
+        tip_height = self.size().height()
+        tip_width = self.size().width()
+
+        vertical = 'bottom'
+        horizontal = 'Right'
+
+        if point.y() + tip_height > screen_rect.height() + screen_rect.y():
+            point_ = text_edit.mapToGlobal(cursor_rect.topRight())
+            # If tip is still off screen, check if point is in top or bottom
+            # half of screen.
+            if point_.y() - tip_height < padding:
+                # If point is in upper half of screen, show tip below it.
+                # otherwise above it.
+                if 2 * point.y() < screen_rect.height():
+                    vertical = 'bottom'
+                else:
+                    vertical = 'top'
+            else:
+                vertical = 'top'
+
+        if point.x() + tip_width > screen_rect.width() + screen_rect.x():
+            point_ = text_edit.mapToGlobal(cursor_rect.topRight())
+            # If tip is still off-screen, check if point is in the right or
+            # left half of the screen.
+            if point_.x() - tip_width < padding:
+                if 2 * point.x() < screen_rect.width():
+                    horizontal = 'Right'
+                else:
+                    horizontal = 'Left'
+            else:
+                horizontal = 'Left'
+        pos = getattr(cursor_rect, '%s%s' % (vertical, horizontal))
+        adjusted_point = text_edit.mapToGlobal(pos())
+
+        if vertical == 'top':
+            if os.name == 'nt':
+                padding = -7
+            else:
+                padding = -4.5
+
+            point.setY(adjusted_point.y() - tip_height - padding)
+
+        if horizontal == 'Left':
+            point.setX(adjusted_point.x() - tip_width - padding)
+
+        self.move(point)
+        if not self.isVisible():
+            self.show()
+        return True
+
+    def mousePressEvent(self, event):
+        """
+        Reimplemented to hide it when focus goes out of the main window.
+        """
+        QApplication.restoreOverrideCursor()
+        if self.completion_doc:
+            name = self.completion_doc.get('name', '')
+            signature = self.completion_doc.get('signature', '')
+            self.sig_completion_help_requested.emit(name, signature)
+        else:
+            self.sig_help_requested.emit(self._url)
+        super(ToolTipWidget, self).mousePressEvent(event)
+        self._hide()
+
+    def focusOutEvent(self, event):
+        """
+        Reimplemented to hide it when focus goes out of the main window.
+        """
+        self.hide()
+
+    def leaveEvent(self, event):
+        """Override Qt method to hide the tooltip on leave."""
+        super(ToolTipWidget, self).leaveEvent(event)
+        self.hide()
+
+    def _hide(self):
+        """Hide method helper."""
+        QApplication.restoreOverrideCursor()
+        self._timer_hide.start()
+
+    def hide(self):
+        """Override Qt method to add timer and restore cursor."""
+        super(ToolTipWidget, self).hide()
+        self._timer_hide.stop()
+
+    def _should_hide(self, state):
+        """
+        This widget should hide itself if the application is not active.
+        """
+        if state != Qt.ApplicationActive:
+            self.hide()
+
 
 
 class CallTipWidget(QLabel):
@@ -32,19 +251,29 @@ class CallTipWidget(QLabel):
     # 'QObject' interface
     #--------------------------------------------------------------------------
 
-    def __init__(self, text_edit, hide_timer_on=False):
+    def __init__(self, text_edit, hide_timer_on=False, as_tooltip=False):
         """ Create a call tip manager that is attached to the specified Qt
             text edit widget.
         """
         assert isinstance(text_edit, (QTextEdit, QPlainTextEdit))
         super(CallTipWidget, self).__init__(None, Qt.ToolTip)
         self.app = QCoreApplication.instance()
+        self.as_tooltip = as_tooltip
 
         self.hide_timer_on = hide_timer_on
         self.tip = None
         self._hide_timer = QBasicTimer()
         self._text_edit = text_edit
+        self._start_position = -1
 
+        # Setup
+        if sys.platform == 'darwin':
+            # This keeps the hints below other applications
+            self.setWindowFlags(Qt.SplashScreen)
+        else:
+            self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.setFont(text_edit.document().defaultFont())
         self.setForegroundRole(QPalette.ToolTipText)
         self.setBackgroundRole(QPalette.ToolTipBase)
@@ -55,6 +284,10 @@ class CallTipWidget(QLabel):
         self.setFrameStyle(QFrame.NoFrame)
         self.setMargin(1 + self.style().pixelMetric(
                 QStyle.PM_ToolTipLabelFrameWidth, None, self))
+
+        # Signals
+        QApplication.instance().applicationStateChanged.connect(
+            self._should_hide)
 
     def eventFilter(self, obj, event):
         """ Reimplemented to hide on certain key presses and on text edit focus
@@ -88,6 +321,9 @@ class CallTipWidget(QLabel):
             elif etype == QEvent.Leave:
                 self._leave_event_hide()
 
+            elif etype == QEvent.WindowBlocked:
+                self.hide()
+
         return super(CallTipWidget, self).eventFilter(obj, event)
 
     def timerEvent(self, event):
@@ -105,6 +341,9 @@ class CallTipWidget(QLabel):
         """ Reimplemented to cancel the hide timer.
         """
         super(CallTipWidget, self).enterEvent(event)
+        if self.as_tooltip:
+            self.hide()
+
         if (self._hide_timer.isActive() and
           self.app.topLevelAt(QCursor.pos()) == self):
             self._hide_timer.stop()
@@ -113,16 +352,21 @@ class CallTipWidget(QLabel):
         """ Reimplemented to disconnect signal handlers and event filter.
         """
         super(CallTipWidget, self).hideEvent(event)
-        self._text_edit.cursorPositionChanged.disconnect(
-            self._cursor_position_changed)
-        self._text_edit.removeEventFilter(self)
+        # This is needed for issue spyder-ide/spyder#9221,
+        try:
+            self._text_edit.cursorPositionChanged.disconnect(
+                self._cursor_position_changed)
+        except (TypeError, RuntimeError):
+            pass
+        else:
+            self._text_edit.removeEventFilter(self)
 
     def leaveEvent(self, event):
         """ Reimplemented to start the hide timer.
         """
         super(CallTipWidget, self).leaveEvent(event)
         self._leave_event_hide()
-    
+
     def mousePressEvent(self, event):
         super(CallTipWidget, self).mousePressEvent(event)
         self.hide()
@@ -164,6 +408,10 @@ class CallTipWidget(QLabel):
     def show_tip(self, point, tip, wrapped_tiplines):
         """ Attempts to show the specified tip at the current cursor location.
         """
+        # Don't show the widget if the main window is not focused
+        if QApplication.instance().applicationState() != Qt.ApplicationActive:
+            return
+
         # Don't attempt to show it if it's already visible and the text
         # to be displayed is the same as the one displayed before.
         if self.isVisible():
@@ -213,7 +461,7 @@ class CallTipWidget(QLabel):
         # Locate and show the widget. Place the tip below the current line
         # unless it would be off the screen.  In that case, decide the best
         # location based trying to minimize the  area that goes off-screen.
-        padding = 3 # Distance in pixels between cursor bounds and tip box.
+        padding = 0  # Distance in pixels between cursor bounds and tip box.
         cursor_rect = text_edit.cursorRect(cursor)
         screen_rect = self.app.desktop().screenGeometry(text_edit)
         point.setY(point.y() + padding)
@@ -248,7 +496,13 @@ class CallTipWidget(QLabel):
                 horizontal = 'Left'
         pos = getattr(cursor_rect, '%s%s' %(vertical, horizontal))
         adjusted_point = text_edit.mapToGlobal(pos())
+
         if vertical == 'top':
+            if os.name == 'nt':
+                padding = -7
+            else:
+                padding = -4.5
+
             point.setY(adjusted_point.y() - tip_height - padding)
         if horizontal == 'Left':
             point.setX(adjusted_point.x() - tip_width - padding)
@@ -316,3 +570,10 @@ class CallTipWidget(QLabel):
             pos, _ = self._find_parenthesis(position - 1, forward=False)
             if pos == -1:
                 self.hide()
+
+    def _should_hide(self, state):
+        """
+        This widget should hide itself if the application is not active.
+        """
+        if state != Qt.ApplicationActive:
+            self.hide()

@@ -1,27 +1,41 @@
 # -*- coding: utf-8 -*-
+# -----------------------------------------------------------------------------
+# Copyright (c) 2013-2016 Colin Duquesnoy and others (see pyqode/AUTHORS.rst)
+# Copyright (c) 2016- Spyder Project Contributors (see AUTHORS.txt)
 #
-# Copyright © Spyder Project Contributors
-# Copyright © <2013-2016> <Colin Duquesnoy and others, see pyqode/AUTHORS.rst>
-# Licensed under the terms of the MIT License
-# (see spyder/__init__.py for details)
+# Distributed under the terms of the MIT License
+# (see NOTICE.txt in the Spyder root directory for details)
+# -----------------------------------------------------------------------------
 
 """
 This module contains the panel API.
-Adapted from https://github.com/pyQode/pyqode.core/blob/master/pyqode/core/api/panel.py
+
+Adapted from pyqode/core/api/panel.py of the
+`PyQode project <https://github.com/pyQode/pyQode>`_.
+Original file:
+<https://github.com/pyQode/pyqode.core/blob/master/pyqode/core/api/panel.py>
 """
+
+# Standard library imports
+from math import ceil
+import logging
+
+# Third party imports
 from qtpy.QtWidgets import QWidget, QApplication
 from qtpy.QtGui import QBrush, QColor, QPen, QPainter
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QRect
 
-from spyder.api.mode import Mode
-from spyder.config.base import debug_print
+# Local imports
+from spyder.api.editorextension import EditorExtension
+
+logger = logging.getLogger(__name__)
 
 
-class Panel(QWidget, Mode):
+class Panel(QWidget, EditorExtension):
     """
     Base class for editor panels.
 
-    A panel is a mode and a QWidget.
+    A panel is a editor extension and a QWidget.
 
     .. note:: Use enabled to disable panel actions and setVisible to change the
         visibility of the panel.
@@ -61,7 +75,7 @@ class Panel(QWidget, Mode):
         self._scrollable = value
 
     def __init__(self, dynamic=False):
-        Mode.__init__(self)
+        EditorExtension.__init__(self)
         QWidget.__init__(self)
         # Specifies whether the panel is dynamic. A dynamic panel is a panel
         # that will be shown/hidden depending on the context.
@@ -79,16 +93,16 @@ class Panel(QWidget, Mode):
 
     def on_install(self, editor):
         """
-        Extends :meth:`spyder.api.Mode.on_install` method to set the
+        Extends :meth:`spyder.api.EditorExtension.on_install` method to set the
         editor instance as the parent widget.
 
         .. warning:: Don't forget to call **super** if you override this
             method!
 
         :param editor: editor instance
-        :type editor: spyder.widgets.sourcecode.CodeEditor
+        :type editor: spyder.plugins.editor.widgets.codeeditor.CodeEditor
         """
-        Mode.on_install(self, editor)
+        EditorExtension.on_install(self, editor)
         self.setParent(editor)
         self.setPalette(QApplication.instance().palette())
         self.setFont(QApplication.instance().font())
@@ -120,7 +134,40 @@ class Panel(QWidget, Mode):
 
         :param visible: Visible state
         """
-        debug_print('{} visibility changed'.format(self.name))
+        logger.debug('%s visibility changed', self.name)
         super(Panel, self).setVisible(visible)
         if self.editor:
             self.editor.panels.refresh()
+
+    def geometry(self):
+        """Return geometry dimentions for floating Panels.
+
+        Note: If None is returned It'll use editor contentsRect dimentions.
+
+        returns: x0, y0, height width.
+        """
+        return 0, 0, None, None
+
+    def set_geometry(self, crect):
+        """Set geometry for floating panels.
+
+        Normally you don't need to override this method, you should override
+        `geometry` instead.
+        """
+        x0, y0, width, height = self.geometry()
+
+        if width is None:
+            width = crect.width()
+        if height is None:
+            height = crect.height()
+
+        # Calculate editor coordinates with their offsets
+        offset = self.editor.contentOffset()
+        x = self.editor.blockBoundingGeometry(self.editor.firstVisibleBlock())\
+            .translated(offset.x(), offset.y()).left() \
+            + self.editor.document().documentMargin() \
+            + self.editor.panels.margin_size(Panel.Position.LEFT)
+        y = crect.top() + self.editor.panels.margin_size(Panel.Position.TOP)
+
+        self.setGeometry(QRect(ceil(x+x0), ceil(y+y0),
+                               ceil(width), ceil(height)))

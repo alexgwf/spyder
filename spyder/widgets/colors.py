@@ -7,35 +7,35 @@
 # Third party imports
 from qtpy.QtCore import Property, QSize, Signal, Slot
 from qtpy.QtGui import QColor, QIcon, QPixmap
-from qtpy.QtWidgets import QColorDialog, QHBoxLayout, QLineEdit, QPushButton
+from qtpy.QtWidgets import QColorDialog, QHBoxLayout, QLineEdit, QToolButton
 
 # Local imports
 from spyder.py3compat import is_text_string
 
 
-class ColorButton(QPushButton):
+class ColorButton(QToolButton):
     """
     Color choosing push button
     """
     colorChanged = Signal(QColor)
-    
+
     def __init__(self, parent=None):
-        QPushButton.__init__(self, parent)
+        QToolButton.__init__(self, parent)
         self.setFixedSize(20, 20)
         self.setIconSize(QSize(12, 12))
         self.clicked.connect(self.choose_color)
         self._color = QColor()
-    
+
     def choose_color(self):
         color = QColorDialog.getColor(self._color, self.parentWidget(),
                                       'Select Color',
                                       QColorDialog.ShowAlphaChannel)
         if color.isValid():
             self.set_color(color)
-    
+
     def get_color(self):
         return self._color
-    
+
     @Slot(QColor)
     def set_color(self, color):
         if color != self._color:
@@ -44,7 +44,7 @@ class ColorButton(QPushButton):
             pixmap = QPixmap(self.iconSize())
             pixmap.fill(color)
             self.setIcon(QIcon(pixmap))
-    
+
     color = Property("QColor", get_color, set_color)
 
 
@@ -74,6 +74,8 @@ class ColorLayout(QHBoxLayout):
         QHBoxLayout.__init__(self)
         assert isinstance(color, QColor)
         self.lineedit = QLineEdit(color.name(), parent)
+        fm = self.lineedit.fontMetrics()
+        self.lineedit.setMinimumWidth(fm.width(color.name()) * 1.2)
         self.lineedit.textChanged.connect(self.update_color)
         self.addWidget(self.lineedit)
         self.colorbtn = ColorButton(parent)
@@ -88,6 +90,6 @@ class ColorLayout(QHBoxLayout):
 
     def update_text(self, color):
         self.lineedit.setText(color.name())
-        
+
     def text(self):
         return self.lineedit.text()

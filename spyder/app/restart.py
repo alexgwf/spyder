@@ -21,16 +21,16 @@ import sys
 import time
 
 # Third party imports
+from qtpy import PYQT5
 from qtpy.QtCore import Qt, QTimer
-from qtpy.QtGui import QColor, QPixmap
+from qtpy.QtGui import QColor, QPixmap, QIcon
 from qtpy.QtWidgets import QApplication, QMessageBox, QSplashScreen, QWidget
 
 # Local imports
 from spyder.config.base import _, get_image_path
-from spyder.py3compat import to_text_string
-from spyder.utils import icon_manager as ima
+from spyder.utils.encoding import to_unicode
 from spyder.utils.qthelpers import qapplication
-from spyder.config.main import CONF
+from spyder.config.manager import CONF
 
 
 PY2 = sys.version[0] == '2'
@@ -52,7 +52,7 @@ def _is_pid_running_on_windows(pid):
                                stderr=subprocess.STDOUT,
                                startupinfo=startupinfo)
     stdoutdata, stderrdata = process.communicate()
-    stdoutdata = to_text_string(stdoutdata)
+    stdoutdata = to_unicode(stdoutdata)
     process.kill()
     check = pid in stdoutdata
 
@@ -105,8 +105,10 @@ class Restarter(QWidget):
 
     def _show_message(self, text):
         """Show message on splash screen."""
-        self.splash.showMessage(text, Qt.AlignBottom | Qt.AlignCenter |
-                                Qt.AlignAbsolute, QColor(Qt.white))
+        self.splash.showMessage(text,
+                                int(Qt.AlignBottom | Qt.AlignCenter |
+                                    Qt.AlignAbsolute),
+                                QColor(Qt.white))
 
     def animate_ellipsis(self):
         """Animate dots at the end of the splash screen message."""
@@ -160,8 +162,13 @@ def main():
     #==========================================================================
     if CONF.get('main', 'high_dpi_custom_scale_factor'):
         factors = str(CONF.get('main', 'high_dpi_custom_scale_factors'))
-        os.environ['QT_SCREEN_SCALE_FACTORS'] = factors
+        f = list(filter(None, factors.split(';')))
+        if len(f) == 1:
+            os.environ['QT_SCALE_FACTOR'] = f[0]
+        else:
+            os.environ['QT_SCREEN_SCALE_FACTORS'] = factors
     else:
+        os.environ['QT_SCALE_FACTOR'] = ''
         os.environ['QT_SCREEN_SCALE_FACTORS'] = ''
 
     # Splash screen
@@ -169,14 +176,16 @@ def main():
     # Start Qt Splash to inform the user of the current status
     app = qapplication()
     restarter = Restarter()
-    resample = not IS_WINDOWS
-    # Resampling SVG icon only on non-Windows platforms (see Issue 1314):
-    icon = ima.icon('spyder', resample=resample)
-    app.setWindowIcon(icon)
+
+    if PYQT5:
+        APP_ICON = QIcon(get_image_path("spyder.svg"))
+    else:
+        APP_ICON = QIcon(get_image_path("spyder.png"))
+    app.setWindowIcon(APP_ICON)
     restarter.set_splash_message(_('Closing Spyder'))
 
     # Get variables
-    # Note: Variables defined in app/spyder.py 'restart()' method
+    # Note: Variables defined in app/mainwindow.py 'restart()' method
     spyder_args = os.environ.pop('SPYDER_ARGS', None)
     pid = os.environ.pop('SPYDER_PID', None)
     is_bootstrap = os.environ.pop('SPYDER_IS_BOOTSTRAP', None)

@@ -1,0 +1,11 @@
+# Spyder extra packages
+autopep8
+flake8
+Paramiko
+pycodestyle
+pydocstyle
+pyflakes
+pyxdg
+rope
+rtree
+yapf

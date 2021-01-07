@@ -8,107 +8,113 @@
 Spyder
 ======
 
-The Scientific PYthon Development EnviRonment
+The Scientific Python Development Environment
+
+Spyder is a powerful scientific environment written in Python, for Python,
+and designed by and for scientists, engineers and data analysts.
+
+It features a unique combination of the advanced editing, analysis, debugging
+and profiling functionality of a comprehensive development tool with the data
+exploration, interactive execution, deep inspection and beautiful visualization
+capabilities of a scientific package.
 """
 
 from __future__ import print_function
 
+# Standard library imports
+from distutils.command.install_data import install_data
+import io
 import os
 import os.path as osp
 import subprocess
 import sys
 import shutil
 
-from distutils.core import setup
-from distutils.command.build import build
-from distutils.command.install import install
-from distutils.command.install_data import install_data
+# Third party imports
+from setuptools import setup, find_packages
+from setuptools.command.install import install
 
 
-#==============================================================================
-# Check for Python 3
-#==============================================================================
-PY3 = sys.version_info[0] == 3
-
-
-#==============================================================================
+# =============================================================================
 # Minimal Python version sanity check
 # Taken from the notebook setup.py -- Modified BSD License
-#==============================================================================
+# =============================================================================
 v = sys.version_info
-if v[:2] < (2,7) or (v[0] >= 3 and v[:2] < (3,3)):
-    error = "ERROR: Spyder requires Python version 2.7 or 3.3 or above."
+if v[0] >= 3 and v[:2] < (3, 6):
+    error = "ERROR: Spyder requires Python version 3.6 and above."
     print(error, file=sys.stderr)
     sys.exit(1)
 
 
-#==============================================================================
+# =============================================================================
 # Constants
-#==============================================================================
+# =============================================================================
 NAME = 'spyder'
 LIBNAME = 'spyder'
-from spyder import __version__, __project_url__
+from spyder import __version__, __website_url__  #analysis:ignore
 
 
-#==============================================================================
+# =============================================================================
 # Auxiliary functions
-#==============================================================================
+# =============================================================================
 def get_package_data(name, extlist):
-    """Return data files for package *name* with extensions in *extlist*"""
+    """
+    Return data files for package *name* with extensions in *extlist*.
+    """
     flist = []
     # Workaround to replace os.path.relpath (not available until Python 2.6):
     offset = len(name)+len(os.pathsep)
     for dirpath, _dirnames, filenames in os.walk(name):
-        for fname in filenames:
-            if not fname.startswith('.') and osp.splitext(fname)[1] in extlist:
-                flist.append(osp.join(dirpath, fname)[offset:])
+        if 'tests' not in dirpath:
+            for fname in filenames:
+                if (not fname.startswith('.') and
+                        osp.splitext(fname)[1] in extlist):
+                    flist.append(osp.join(dirpath, fname)[offset:])
     return flist
 
 
 def get_subpackages(name):
-    """Return subpackages of package *name*"""
+    """
+    Return subpackages of package *name*.
+    """
     splist = []
     for dirpath, _dirnames, _filenames in os.walk(name):
-        if osp.isfile(osp.join(dirpath, '__init__.py')):
-            splist.append(".".join(dirpath.split(os.sep)))
+        if 'tests' not in dirpath:
+            if osp.isfile(osp.join(dirpath, '__init__.py')):
+                splist.append(".".join(dirpath.split(os.sep)))
+
     return splist
 
 
 def get_data_files():
-    """Return data_files in a platform dependent manner"""
+    """
+    Return data_files in a platform dependent manner.
+    """
     if sys.platform.startswith('linux'):
-        if PY3:
-            data_files = [('share/applications', ['scripts/spyder3.desktop']),
-                          ('share/pixmaps', ['img_src/spyder3.png']),
-                          ('share/metainfo', ['scripts/spyder3.appdata.xml'])]
-        else:
-            data_files = [('share/applications', ['scripts/spyder.desktop']),
-                          ('share/pixmaps', ['img_src/spyder.png'])]
+        data_files = [('share/applications', ['scripts/spyder.desktop']),
+                      ('share/icons', ['img_src/spyder.png'])]
     elif os.name == 'nt':
         data_files = [('scripts', ['img_src/spyder.ico',
                                    'img_src/spyder_reset.ico'])]
     else:
         data_files = []
+
     return data_files
 
 
 def get_packages():
-    """Return package list"""
-    packages = (
-        get_subpackages(LIBNAME)
-        + get_subpackages('spyder_breakpoints')
-        + get_subpackages('spyder_profiler')
-        + get_subpackages('spyder_pylint')
-        + get_subpackages('spyder_io_dcm')
-        + get_subpackages('spyder_io_hdf5')
-        )
+    """
+    Return package list.
+    """
+    packages = get_subpackages(LIBNAME)
     return packages
 
 
-#==============================================================================
-# Make Linux detect Spyder desktop file
-#==============================================================================
-class MyInstallData(install_data):
+# =============================================================================
+# Make Linux detect Spyder desktop file (will not work with wheels)
+# =============================================================================
+class CustomInstallData(install_data):
+
     def run(self):
         install_data.run(self)
         if sys.platform.startswith('linux'):
@@ -117,216 +123,191 @@ class MyInstallData(install_data):
             except:
                 print("ERROR: unable to update desktop database",
                       file=sys.stderr)
-CMDCLASS = {'install_data': MyInstallData}
 
 
-#==============================================================================
-# Sphinx build (documentation)
-#==============================================================================
-def get_html_help_exe():
-    """Return HTML Help Workshop executable path (Windows only)"""
-    if os.name == 'nt':
-        hhc_base = r'C:\Program Files%s\HTML Help Workshop\hhc.exe'
-        for hhc_exe in (hhc_base % '', hhc_base % ' (x86)'):
-            if osp.isfile(hhc_exe):
-                return hhc_exe
-        else:
-            return
-
-try:
-    from sphinx import setup_command
-
-    class MyBuild(build):
-        user_options = [('no-doc', None, "Don't build Spyder documentation")] \
-                       + build.user_options
-        def __init__(self, *args, **kwargs):
-            build.__init__(self, *args, **kwargs)
-            self.no_doc = False
-        def with_doc(self):
-            setup_dir = os.path.dirname(os.path.abspath(__file__))
-            is_doc_dir = os.path.isdir(os.path.join(setup_dir, 'doc'))
-            install_obj = self.distribution.get_command_obj('install')
-            return (is_doc_dir and not self.no_doc and not install_obj.no_doc)
-        sub_commands = build.sub_commands + [('build_doc', with_doc)]
-    CMDCLASS['build'] = MyBuild
+CMDCLASS = {'install_data': CustomInstallData}
 
 
-    class MyInstall(install):
-        user_options = [('no-doc', None, "Don't build Spyder documentation")] \
-                       + install.user_options
-        def __init__(self, *args, **kwargs):
-            install.__init__(self, *args, **kwargs)
-            self.no_doc = False
-    CMDCLASS['install'] = MyInstall
-
-
-    class MyBuildDoc(setup_command.BuildDoc):
-        def run(self):
-            build = self.get_finalized_command('build')
-            sys.path.insert(0, os.path.abspath(build.build_lib))
-            dirname = self.distribution.get_command_obj('build').build_purelib
-            self.builder_target_dir = osp.join(dirname, 'spyder', 'doc')
-
-            if not osp.exists(self.builder_target_dir):
-                os.mkdir(self.builder_target_dir)
-
-            hhc_exe = get_html_help_exe()
-            self.builder = "html" if hhc_exe is None else "htmlhelp"
-
-            try:
-                setup_command.BuildDoc.run(self)
-            except UnicodeDecodeError:
-                print("ERROR: unable to build documentation because Sphinx "\
-                      "do not handle source path with non-ASCII characters. "\
-                      "Please try to move the source package to another "\
-                      "location (path with *only* ASCII characters).",
-                      file=sys.stderr)
-            sys.path.pop(0)
-
-            # Building chm doc, if HTML Help Workshop is installed
-            if hhc_exe is not None:
-                fname = osp.join(self.builder_target_dir, 'Spyderdoc.chm')
-                subprocess.call('"%s" %s' % (hhc_exe, fname), shell=True)
-                if osp.isfile(fname):
-                    dest = osp.join(dirname, 'spyder')
-                    try:
-                        shutil.move(fname, dest)
-                    except shutil.Error:
-                        print("Unable to replace %s" % dest)
-                    shutil.rmtree(self.builder_target_dir)
-
-    CMDCLASS['build_doc'] = MyBuildDoc
-except ImportError:
-    print('WARNING: unable to build documentation because Sphinx '\
-          'is not installed', file=sys.stderr)
-
-
-#==============================================================================
+# =============================================================================
 # Main scripts
-#==============================================================================
+# =============================================================================
 # NOTE: the '[...]_win_post_install.py' script is installed even on non-Windows
-# platforms due to a bug in pip installation process (see Issue 1158)
+# platforms due to a bug in pip installation process
+# See spyder-ide/spyder#1158.
 SCRIPTS = ['%s_win_post_install.py' % NAME]
-if PY3 and sys.platform.startswith('linux'):
-    SCRIPTS.append('spyder3')
-else:
-    SCRIPTS.append('spyder')
 
+SCRIPTS.append('spyder')
 
-#==============================================================================
-# Files added to the package
-#==============================================================================
-EXTLIST = ['.mo', '.svg', '.png', '.css', '.html', '.js', '.chm', '.ini',
-           '.txt', '.rst', '.qss', '.ttf', '.json', '.c', '.cpp', '.java',
-           '.md', '.R', '.csv', '.pyx', '.ipynb']
 if os.name == 'nt':
     SCRIPTS += ['spyder.bat']
-    EXTLIST += ['.ico']
+
+
+# =============================================================================
+# Files added to the package
+# =============================================================================
+EXTLIST = ['.pot', '.po', '.mo', '.svg', '.png', '.css', '.html', '.js',
+           '.ini', '.txt', '.qss', '.ttf', '.json', '.rst', '.bloom',
+           '.ico', '.gif', '.mp3', '.ogg', '.sfd', '.bat', '.sh']
+
+
+# =============================================================================
+# Use Readme for long description
+# =============================================================================
+with io.open('README.md', encoding='utf-8') as f:
+    LONG_DESCRIPTION = f.read()
 
 
 #==============================================================================
 # Setup arguments
 #==============================================================================
-setup_args = dict(name=NAME,
-      version=__version__,
-      description='Scientific PYthon Development EnviRonment',
-      long_description=
-"""Spyder is an interactive Python development environment providing
-MATLAB-like features in a simple and light-weighted software.
-It also provides ready-to-use pure-Python widgets to your PyQt5 or
-PyQt4 application: source code editor with syntax highlighting and
-code introspection/analysis features, NumPy array editor, dictionary
-editor, Python console, etc.""",
-      download_url='%s/files/%s-%s.zip' % (__project_url__, NAME, __version__),
-      author="The Spyder Project Contributors",
-      url=__project_url__,
-      license='MIT',
-      keywords='PyQt5 PyQt4 editor shell console widgets IDE',
-      platforms=['any'],
-      packages=get_packages(),
-      package_data={LIBNAME: get_package_data(LIBNAME, EXTLIST),
-                    'spyder_breakpoints': get_package_data('spyder_breakpoints', EXTLIST),
-                    'spyder_profiler': get_package_data('spyder_profiler', EXTLIST),
-                    'spyder_pylint': get_package_data('spyder_pylint', EXTLIST),
-                    'spyder_io_dcm': get_package_data('spyder_io_dcm', EXTLIST),
-                    'spyder_io_hdf5': get_package_data('spyder_io_hdf5', EXTLIST),
-                    },
-      scripts=[osp.join('scripts', fname) for fname in SCRIPTS],
-      data_files=get_data_files(),
-      classifiers=['License :: OSI Approved :: MIT License',
-                   'Operating System :: MacOS',
-                   'Operating System :: Microsoft :: Windows',
-                   'Operating System :: POSIX :: Linux',
-                   'Programming Language :: Python :: 2.7',
-                   'Programming Language :: Python :: 3',
-                   'Development Status :: 5 - Production/Stable',
-                   'Topic :: Scientific/Engineering',
-                   'Topic :: Software Development :: Widget Sets'],
-      cmdclass=CMDCLASS)
+setup_args = dict(
+    name=NAME,
+    version=__version__,
+    description='The Scientific Python Development Environment',
+    long_description=LONG_DESCRIPTION,
+    long_description_content_type='text/markdown',
+    download_url=__website_url__ + "#fh5co-download",
+    author="The Spyder Project Contributors",
+    author_email="spyder.python@gmail.com",
+    url=__website_url__,
+    license='MIT',
+    keywords='PyQt5 editor console widgets IDE science data analysis IPython',
+    platforms=["Windows", "Linux", "Mac OS-X"],
+    packages=get_packages(),
+    package_data={LIBNAME: get_package_data(LIBNAME, EXTLIST)},
+    scripts=[osp.join('scripts', fname) for fname in SCRIPTS],
+    data_files=get_data_files(),
+    python_requires='>=3.6',
+    classifiers=[
+        'License :: OSI Approved :: MIT License',
+        'Operating System :: MacOS',
+        'Operating System :: Microsoft :: Windows',
+        'Operating System :: POSIX :: Linux',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Development Status :: 5 - Production/Stable',
+        'Intended Audience :: Education',
+        'Intended Audience :: Science/Research',
+        'Intended Audience :: Developers',
+        'Topic :: Scientific/Engineering',
+        'Topic :: Software Development :: Widget Sets',
+    ],
+    cmdclass=CMDCLASS,
+)
 
-
-#==============================================================================
-# Setuptools deps
-#==============================================================================
-if any(arg == 'bdist_wheel' for arg in sys.argv):
-    import setuptools     # analysis:ignore
 
 install_requires = [
-    'rope>=0.10.5',
-    'jedi>=0.9.0',
-    'pyflakes',
-    'pygments>=2.0',
-    'qtconsole>=4.2.0',
-    'nbconvert',
-    'sphinx',
-    'pycodestyle',
-    'pylint',
-    'psutil',
-    'qtawesome>=0.4.1',
-    'qtpy>=1.1.0',
-    'pickleshare',
-    'pyzmq',
+    'applaunchservices>=0.1.7;platform_system=="Darwin"',
+    'atomicwrites>=1.2.0',
     'chardet>=2.0.0',
-    'numpydoc'
+    'cloudpickle>=0.5.0',
+    'cookiecutter>=1.6.0',
+    'diff-match-patch>=20181111',
+    'intervaltree>=3.0.2',
+    'ipython>=7.6.0',
+    'jedi==0.17.2',
+    'jsonschema>=3.2.0',
+    'keyring>=17.0.0',
+    'nbconvert>=4.0',
+    'numpydoc>=0.6.0',
+    # Required to get SSH connections to remote kernels
+    'paramiko>=2.4.0;platform_system=="Windows"',
+    'parso==0.7.0',
+    'pexpect>=4.4.0',
+    'pickleshare>=0.4',
+    'psutil>=5.3',
+    'pygments>=2.0',
+    'pylint>=1.0',
+    'pyqt5<5.13',
+    'pyqtwebengine<5.13',
+    'python-language-server[all]>=0.36.2,<1.0.0',
+    'pyls-black>=0.4.6',
+    'pyls-spyder>=0.3.0',
+    'pyxdg>=0.26;platform_system=="Linux"',
+    'pyzmq>=17',
+    'qdarkstyle>=2.8',
+    'qtawesome>=0.5.7',
+    'qtconsole>=5.0.1',
+    'qtpy>=1.5.0',
+    'setuptools>=39.0.0',
+    'sphinx>=0.6.6',
+    'spyder-kernels>=1.10.1,<1.11.0',
+    'textdistance>=4.2.0',
+    'three-merge>=0.1.1',
+    'watchdog>=0.10.3'
 ]
 
-# This is needed only for pip installations on Linux.
-# See issue #3332
-if any([arg.startswith('manylinux1') for arg in sys.argv]):
-    install_requires = install_requires + ['pyopengl']
-
 extras_require = {
-    'test:python_version == "2.7"': ['mock'],
-    'test': ['pytest',
-             'pytest-qt',
-             'pytest-cov',
-             'pytest-xvfb',
-             'pytest-timeout',
-             'mock',
-             'flaky',
-             'pandas',
-             'scipy',
-             'sympy',
-             'pillow',
-             'matplotlib',
-             'cython'],
+    'test:platform_system == "Linux"': ['pytest-xvfb'],
+    'test:platform_system == "Windows"': ['pywin32'],
+    'test': [
+        'coverage',
+        'cython',
+        'flaky',
+        'matplotlib',
+        'mock',
+        'pandas',
+        'pillow',
+        'pytest<6.0',
+        'pytest-cov',
+        'pytest-lazy-fixture',
+        'pytest-mock',
+        'pytest-ordering',
+        'pytest-qt',
+        'pyyaml',
+        'scipy',
+        'sympy',
+    ],
 }
 
-if 'setuptools' in sys.modules:
-    setup_args['install_requires'] = install_requires
-    setup_args['extras_require'] = extras_require
 
-    setup_args['entry_points'] = {
-        'gui_scripts': [
-            '{} = spyder.app.start:main'.format(
-                'spyder3' if PY3 else 'spyder')
-        ]
-    }
+spyder_plugins_entry_points = [
+    'appearance = spyder.plugins.appearance.plugin:Appearance',
+    'breakpoints = spyder.plugins.breakpoints.plugin:Breakpoints',
+    ('code_completion = spyder.plugins.completion.manager.plugin:'
+     'CompletionManager'),
+    'core = spyder.plugins.core.plugin:Core',
+    'editor = spyder.plugins.editor.plugin:Editor',
+    'explorer = spyder.plugins.explorer.plugin:Explorer',
+    ('fallback_completion = spyder.plugins.completion.fallback.plugin:'
+     'FallbackPlugin'),
+    'find_in_files = spyder.plugins.findinfiles.plugin:FindInFiles',
+    'help = spyder.plugins.help.plugin:Help',
+    'historylog = spyder.plugins.history.plugin:HistoryLog',
+    'ipython_console = spyder.plugins.ipythonconsole.plugin:IPythonConsole',
+    ('kite_completion = spyder.plugins.completion.kite.plugin:'
+     'KiteCompletionPlugin'),
+    'onlinehelp = spyder.plugins.onlinehelp.plugin:OnlineHelp',
+    'outline_explorer = spyder.plugins.outlineexplorer.plugin:OutlineExplorer',
+    'plots = spyder.plugins.plots.plugin:Plots',
+    'profiler = spyder.plugins.profiler.plugin:Profiler',
+    'project_explorer = spyder.plugins.projects.plugin:Projects',
+    'pylint = spyder.plugins.pylint.plugin:Pylint',
+    ('lsp_completion = spyder.plugins.completion.languageserver.plugin:'
+     'LanguageServerPlugin'),
+    'python = spyder.plugins.python.plugin:Python',
+    ('variable_explorer = spyder.plugins.variableexplorer.plugin:'
+     'VariableExplorer'),
+    ('workingdir = spyder.plugins.workingdirectory.plugin:'
+     'WorkingDirectory'),
+]
 
-    setup_args.pop('scripts', None)
+
+setup_args['install_requires'] = install_requires
+setup_args['extras_require'] = extras_require
+setup_args['entry_points'] = {
+    'gui_scripts': [
+            'spyder = spyder.app.start:main'
+    ],
+    'spyder.plugins': spyder_plugins_entry_points,
+}
+setup_args.pop('scripts', None)
 
 
-#==============================================================================
+# =============================================================================
 # Main setup
-#==============================================================================
+# =============================================================================
 setup(**setup_args)
